@@ -107,6 +107,14 @@ def ejecutar(
         lineas += ["", f"*Resumen:* {resumen_conversacion}"]
 
     # Sección de cotización si existe
+    # Parsear datos_cotizacion si viene como string JSON
+    if datos_cotizacion and isinstance(datos_cotizacion, str):
+        try:
+            import json as _json
+            datos_cotizacion = _json.loads(datos_cotizacion)
+        except Exception:
+            datos_cotizacion = None
+
     if datos_cotizacion and isinstance(datos_cotizacion, dict):
         opciones = datos_cotizacion.get("opciones_para_asesor", {})
         mejor = datos_cotizacion.get("mejor_plan", {})
