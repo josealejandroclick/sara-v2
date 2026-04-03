@@ -95,15 +95,11 @@ Servir `channels/webchat.html` y configurar `data-server` al URL del webhook ser
 Cada agente de seguros tiene su propio bot con su personalidad:
 
 ```bash
-# Irania - Salud Segura
-SOUL_FILE=souls/salud_segura.md \
-TELEGRAM_BOT_TOKEN=token-bot-irania \
+# jimmy - mkaddesh
+SOUL_FILE=souls/mkaddesh.md \
+TELEGRAM_BOT_TOKEN=token-bot-mkaddesh \
 python channels/telegram_bot.py
 
-# Yohenma - Futuro Seguro  
-SOUL_FILE=souls/futuro_seguro.md \
-TELEGRAM_BOT_TOKEN=token-bot-yohenma \
-python channels/telegram_bot.py
 ```
 
 ## Integración con GHL
@@ -131,7 +127,7 @@ Agregar al final del `<body>`:
 ```html
 <script src="https://tu-cdn.com/sam-widget.js"
   data-server="https://sam.tudominio.com"
-  data-agent="Salud Segura"
+  data-agent="mkaddesh"
   data-color="#0ea5e9"
   data-desc="Tu asistente de seguros">
 </script>
@@ -164,4 +160,4 @@ O embeber con iframe:
 
 ## Licencia
 
-Uso privado — Noxo Solutions.
+Uso privado — Clickia.
