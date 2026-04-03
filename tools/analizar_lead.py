@@ -78,7 +78,8 @@ def ejecutar(
     plan_interes: str = "",
     resumen_conversacion: str = "",
     datos_cotizacion: dict = None,
-    chat_id: str = ""
+    chat_id: str = "",
+    **kwargs  # acepta session_id y otros parámetros extra sin error
 ) -> str:
     emoji_map = {"CALIENTE": "🔥", "TIBIO": "🌡", "FRIO": "❄️"}
     emoji = emoji_map.get(temperatura, "❓")
