@@ -8,7 +8,8 @@ import json
 import os
 import httpx
 
-NOTIFY_BOT_TOKEN = os.getenv("NOTIFY_BOT_TOKEN", "")
+# Usar NOTIFY_BOT_TOKEN si existe, sino usar TELEGRAM_BOT_TOKEN como fallback
+NOTIFY_BOT_TOKEN = os.getenv("NOTIFY_BOT_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")
 NOTIFY_CHAT_ID = os.getenv("NOTIFY_CHAT_ID", "")
 
 TOOL_SCHEMA = {
@@ -86,8 +87,8 @@ def ejecutar(
 
     planes_nombres = {
         "full": "💎 Full Cover — salud + hospitalización + accidente",
-        "medium": "🛡️ Medium — salud + accidente",
-        "basico": "🏥 Básico — solo salud"
+        "medium": "🛡️ Medium Cover — salud + accidente",
+        "basico": "🏥 Plan Básico — solo salud"
     }
 
     # Construir mensaje
