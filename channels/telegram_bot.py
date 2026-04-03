@@ -6,6 +6,7 @@ import asyncio
 import logging
 import sys
 import os
+import re
 import random
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,8 +44,6 @@ logger = logging.getLogger("sara_telegram")
 # UTILIDADES DE FORMATO
 # ============================================================
 
-import re
-
 def limpiar_markdown(texto: str) -> str:
     """Elimina markdown que Telegram renderiza como formato robótico."""
     texto = re.sub(r'\*\*(.*?)\*\*', r'\1', texto)
@@ -58,16 +57,25 @@ def limpiar_markdown(texto: str) -> str:
 
 def dividir_en_mensajes(texto: str) -> list:
     """
-    Divide la respuesta en mensajes separados.
-    Cuando Sara presenta los 3 planes, cada uno va en mensaje propio.
+    Divide la respuesta en mensajes separados:
+    1. Si hay planes (Básico, Medium, Full Cover) → cada plan en mensaje propio
+    2. Si la respuesta es larga → divide por párrafos (doble salto de línea)
+    3. Nunca envía un bloque de más de 600 caracteres como un solo mensaje
     """
     marcadores = ['Plan Básico', 'Plan Medium', 'Plan Full Cover']
     tiene_planes = sum(1 for m in marcadores if m in texto)
 
+    # Dividir por planes
     if tiene_planes >= 2:
         partes = re.split(r'(?=Plan Básico|Plan Medium|Plan Full Cover)', texto)
         mensajes = [p.strip() for p in partes if p.strip()]
         return mensajes
+
+    # Dividir por párrafos si el texto es largo
+    if len(texto) > 600 and '\n\n' in texto:
+        partes = [p.strip() for p in texto.split('\n\n') if p.strip()]
+        if len(partes) > 1:
+            return partes
 
     return [texto]
 
@@ -90,16 +98,10 @@ SALUDOS_INICIO = [
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
-
-    # Limpiar sesión anterior para empezar fresco
     eliminar_sesion(chat_id)
     registrar_actividad(chat_id)
-
-    # Sara saluda con uno de los saludos naturales — sin pasar por el agente
-    # para evitar doble saludo y mantener el tono correcto desde el inicio
     saludo = random.choice(SALUDOS_INICIO)
     await update.message.reply_text(saludo)
-
     nombre = update.effective_user.first_name or "Usuario"
     logger.info(f"Nuevo usuario: {nombre} (chat_id: {chat_id})")
 
@@ -138,18 +140,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         agente = crear_agente()
         respuesta = procesar_mensaje(agente, chat_id, texto)
 
-        # Limpiar markdown y dividir en mensajes
+        # Limpiar markdown y dividir en mensajes naturales
         respuesta_limpia = limpiar_markdown(respuesta)
         mensajes = dividir_en_mensajes(respuesta_limpia)
 
         for i, msg in enumerate(mensajes):
             if not msg.strip():
                 continue
-            # Simular pausa natural entre mensajes
             if i > 0:
-                await asyncio.sleep(1.2)
+                # Pausa proporcional al largo del mensaje anterior
+                pausa = min(2.0, max(1.0, len(mensajes[i-1]) / 200))
+                await asyncio.sleep(pausa)
                 await update.effective_chat.send_action(ChatAction.TYPING)
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.8)
             await update.message.reply_text(msg)
 
         logger.info(f"[{chat_id}] Sara respondió ({len(mensajes)} msgs)")
@@ -191,7 +194,7 @@ def on_cron(tarea: dict):
     logger.info(f"⏰ Cron: {tipo} - {descripcion}")
 
     if tipo == "recordatorio" and session_id:
-        _enviar_async(session_id, f"Oye, quería saber si tienes alguna duda sobre lo que hablamos. Aquí estoy 😊")
+        _enviar_async(session_id, "Oye, quería saber si tienes alguna duda sobre lo que hablamos. Aquí estoy 😊")
 
     elif tipo == "followup" and session_id:
         try:
