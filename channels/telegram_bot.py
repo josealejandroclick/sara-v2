@@ -83,6 +83,82 @@ def dividir_en_mensajes(texto: str) -> list:
     return [texto]
 
 
+
+# ============================================================
+# HANDLERS
+# ============================================================
+
+_bot = None
+_loop = None
+
+SALUDOS_INICIO = [
+    "Hola, soy Sara de Mkaddesh 👋 ¿Tienes seguro médico o estás buscando opciones?",
+    "Hola 👋 soy Sara de Mkaddesh. ¿Ya tienes cobertura médica o estás buscando?",
+    "Hola, soy Sara de Mkaddesh. ¿Tienes seguro ahorita o estás sin cobertura?",
+    "Hola 👋 Sara de Mkaddesh por aquí. ¿Tienes seguro médico o estás buscando uno?",
+]
+
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    eliminar_sesion(chat_id)
+    registrar_actividad(chat_id)
+    saludo = random.choice(SALUDOS_INICIO)
+    await update.message.reply_text(saludo)
+    logger.info(f"Nuevo usuario: {update.effective_user.first_name} (chat_id: {chat_id})")
+
+
+async def cmd_nueva(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    eliminar_sesion(chat_id)
+    registrar_actividad(chat_id)
+    saludo = random.choice(SALUDOS_INICIO)
+    await update.message.reply_text(saludo)
+
+
+async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    info = obtener_info_sesion(chat_id)
+    await update.message.reply_text(
+        f"Sesión activa\nMensajes: {info.get('turnos', 0)}\nTamaño: {info.get('tamaño_kb', 0)} KB"
+    )
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    texto = update.message.text
+    nombre = update.effective_user.first_name or "Usuario"
+
+    if not texto:
+        return
+
+    logger.info(f"[{chat_id}] {nombre}: {texto[:50]}...")
+    await update.effective_chat.send_action(ChatAction.TYPING)
+
+    try:
+        agente = crear_agente()
+        respuesta = procesar_mensaje(agente, chat_id, texto)
+
+        respuesta_limpia = limpiar_markdown(respuesta)
+        mensajes = dividir_en_mensajes(respuesta_limpia)
+
+        for i, msg in enumerate(mensajes):
+            if not msg.strip():
+                continue
+            if i > 0:
+                pausa = min(2.0, max(1.0, len(mensajes[i-1]) / 200))
+                await asyncio.sleep(pausa)
+                await update.effective_chat.send_action(ChatAction.TYPING)
+                await asyncio.sleep(0.8)
+            await update.message.reply_text(msg)
+
+        logger.info(f"[{chat_id}] Sara respondió ({len(mensajes)} msgs)")
+
+    except Exception as e:
+        logger.error(f"[{chat_id}] Error: {e}", exc_info=True)
+        await update.message.reply_text("Disculpa, tuve un problema técnico. ¿Puedes repetir eso?")
+
+
 def _enviar_async(chat_id: str, texto: str):
     if _bot and _loop:
         future = asyncio.run_coroutine_threadsafe(
