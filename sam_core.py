@@ -129,13 +129,18 @@ class SamAgente:
             for bloque in response.content:
                 if bloque.type == "tool_use":
                     handler = TOOL_HANDLERS.get(bloque.name)
-                    if handler:
-                        if bloque.name in TOOLS_CON_SESSION:
-                            output = handler(**bloque.input, session_id=session_id)
+                    try:
+                        if handler:
+                            if bloque.name in TOOLS_CON_SESSION:
+                                output = handler(**bloque.input, session_id=session_id)
+                            else:
+                                output = handler(**bloque.input)
                         else:
-                            output = handler(**bloque.input)
-                    else:
-                        output = json.dumps({"error": f"Tool '{bloque.name}' no encontrada"})
+                            output = json.dumps({"error": f"Tool '{bloque.name}' no encontrada"})
+                    except Exception as e:
+                        # Si el tool falla, devolver error como tool_result
+                        # para no dejar el historial en estado inválido
+                        output = json.dumps({"error": f"Error ejecutando tool: {str(e)}"})
 
                     resultados.append({
                         "type": "tool_result",
