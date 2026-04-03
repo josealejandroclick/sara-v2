@@ -38,6 +38,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sara_telegram")
 
+
+# ============================================================
+# UTILIDADES DE FORMATO
+# ============================================================
+
+import re
+
+def limpiar_markdown(texto: str) -> str:
+    """Elimina markdown que Telegram renderiza como formato robótico."""
+    texto = re.sub(r'\*\*(.*?)\*\*', r'\1', texto)
+    texto = re.sub(r'__(.*?)__', r'\1', texto)
+    texto = re.sub(r'\*([^*\n]+)\*', r'\1', texto)
+    texto = re.sub(r'^#{1,6}\s+', '', texto, flags=re.MULTILINE)
+    texto = re.sub(r'^\s*[-•]\s+', '', texto, flags=re.MULTILINE)
+    texto = re.sub(r'\n{3,}', '\n\n', texto)
+    return texto.strip()
+
+
+def dividir_en_mensajes(texto: str) -> list:
+    """
+    Divide la respuesta en mensajes separados.
+    Cuando Sara presenta los 3 planes, cada uno va en mensaje propio.
+    """
+    marcadores = ['Plan Básico', 'Plan Medium', 'Plan Full Cover']
+    tiene_planes = sum(1 for m in marcadores if m in texto)
+
+    if tiene_planes >= 2:
+        partes = re.split(r'(?=Plan Básico|Plan Medium|Plan Full Cover)', texto)
+        mensajes = [p.strip() for p in partes if p.strip()]
+        return mensajes
+
+    return [texto]
+
+
 _bot: Bot = None
 _loop: asyncio.AbstractEventLoop = None
 
@@ -104,13 +138,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         agente = crear_agente()
         respuesta = procesar_mensaje(agente, chat_id, texto)
 
-        if len(respuesta) <= 4096:
-            await update.message.reply_text(respuesta)
-        else:
-            for i in range(0, len(respuesta), 4096):
-                await update.message.reply_text(respuesta[i:i + 4096])
+        # Limpiar markdown y dividir en mensajes
+        respuesta_limpia = limpiar_markdown(respuesta)
+        mensajes = dividir_en_mensajes(respuesta_limpia)
 
-        logger.info(f"[{chat_id}] Sara respondió ({len(respuesta)} chars)")
+        for i, msg in enumerate(mensajes):
+            if not msg.strip():
+                continue
+            # Simular pausa natural entre mensajes
+            if i > 0:
+                await asyncio.sleep(1.2)
+                await update.effective_chat.send_action(ChatAction.TYPING)
+                await asyncio.sleep(1.0)
+            await update.message.reply_text(msg)
+
+        logger.info(f"[{chat_id}] Sara respondió ({len(mensajes)} msgs)")
 
     except Exception as e:
         logger.error(f"[{chat_id}] Error: {e}", exc_info=True)
