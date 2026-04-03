@@ -118,6 +118,9 @@ def ejecutar(
     if datos_cotizacion and isinstance(datos_cotizacion, dict):
         opciones = datos_cotizacion.get("opciones_para_asesor", {})
         mejor = datos_cotizacion.get("mejor_plan", {})
+        # mejor_plan puede venir como string (nombre del plan) o como dict
+        if isinstance(mejor, str):
+            mejor = {"nombre": mejor}
         fpl = datos_cotizacion.get("fpl_porcentaje", 0)
         aptc = datos_cotizacion.get("aptc_mensual", 0)
         csr = datos_cotizacion.get("csr", "")
