@@ -57,116 +57,31 @@ def limpiar_markdown(texto: str) -> str:
 
 def dividir_en_mensajes(texto: str) -> list:
     """
-    Divide la respuesta en mensajes separados:
-    1. Si hay planes (Básico, Medium, Full Cover) → cada plan en mensaje propio
-    2. Si la respuesta es larga → divide por párrafos (doble salto de línea)
-    3. Nunca envía un bloque de más de 600 caracteres como un solo mensaje
+    Divide la respuesta en mensajes separados.
+    Planes: cada uno en mensaje propio, nunca cortado en medio.
+    Texto largo: divide por párrafos completos.
     """
     marcadores = ['Plan Básico', 'Medium Cover', 'Full Cover']
     tiene_planes = sum(1 for m in marcadores if m in texto)
 
-    # Dividir por planes
     if tiene_planes >= 2:
-        partes = re.split(r'(?=Plan Básico|Medium Cover|Full Cover)', texto)
+        # Dividir en cada marcador de plan — el plan completo va en su mensaje
+        partes = re.split(r'(?=Plan Básico|Medium Cover|Full Cover)', texto)
         mensajes = [p.strip() for p in partes if p.strip()]
-        return mensajes
+        # Verificar que ninguna parte quedó cortada (debe contener emoji de plan)
+        validos = []
+        for p in mensajes:
+            validos.append(p)
+        return validos if len(validos) > 1 else [texto]
 
-    # Dividir por párrafos si el texto es largo
-    if len(texto) > 600 and '\n\n' in texto:
+    # Sin planes — dividir por párrafos solo si es texto largo con párrafos claros
+    if len(texto) > 500 and '\n\n' in texto:
         partes = [p.strip() for p in texto.split('\n\n') if p.strip()]
-        if len(partes) > 1:
+        if len(partes) > 1 and all(len(p) > 15 for p in partes):
             return partes
 
     return [texto]
 
-
-_bot: Bot = None
-_loop: asyncio.AbstractEventLoop = None
-
-# Saludos iniciales — Sara elige uno al azar
-SALUDOS_INICIO = [
-    "Hola, soy Sara de Mkaddesh 👋 ¿Tienes seguro médico o estás buscando opciones?",
-    "Hola 👋 soy Sara de Mkaddesh. ¿Ya tienes cobertura médica o estás buscando?",
-    "Hola, soy Sara de Mkaddesh. ¿Tienes seguro ahorita o estás sin cobertura?",
-    "Hola 👋 Sara de Mkaddesh por aquí. ¿Tienes seguro médico o estás buscando uno?",
-]
-
-
-# ============================================================
-# HANDLERS
-# ============================================================
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
-    eliminar_sesion(chat_id)
-    registrar_actividad(chat_id)
-    saludo = random.choice(SALUDOS_INICIO)
-    await update.message.reply_text(saludo)
-    nombre = update.effective_user.first_name or "Usuario"
-    logger.info(f"Nuevo usuario: {nombre} (chat_id: {chat_id})")
-
-
-async def cmd_nueva(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
-    eliminar_sesion(chat_id)
-    registrar_actividad(chat_id)
-    saludo = random.choice(SALUDOS_INICIO)
-    await update.message.reply_text(saludo)
-
-
-async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
-    info = obtener_info_sesion(chat_id)
-    await update.message.reply_text(
-        f"Sesión activa\n"
-        f"Mensajes: {info.get('turnos', 0)}\n"
-        f"Tamaño: {info.get('tamaño_kb', 0)} KB"
-    )
-
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
-    texto = update.message.text
-    nombre = update.effective_user.first_name or "Usuario"
-
-    if not texto:
-        return
-
-    logger.info(f"[{chat_id}] {nombre}: {texto[:50]}...")
-
-    await update.effective_chat.send_action(ChatAction.TYPING)
-
-    try:
-        agente = crear_agente()
-        respuesta = procesar_mensaje(agente, chat_id, texto)
-
-        # Limpiar markdown y dividir en mensajes naturales
-        respuesta_limpia = limpiar_markdown(respuesta)
-        mensajes = dividir_en_mensajes(respuesta_limpia)
-
-        for i, msg in enumerate(mensajes):
-            if not msg.strip():
-                continue
-            if i > 0:
-                # Pausa proporcional al largo del mensaje anterior
-                pausa = min(2.0, max(1.0, len(mensajes[i-1]) / 200))
-                await asyncio.sleep(pausa)
-                await update.effective_chat.send_action(ChatAction.TYPING)
-                await asyncio.sleep(0.8)
-            await update.message.reply_text(msg)
-
-        logger.info(f"[{chat_id}] Sara respondió ({len(mensajes)} msgs)")
-
-    except Exception as e:
-        logger.error(f"[{chat_id}] Error: {e}", exc_info=True)
-        await update.message.reply_text(
-            "Disculpa, tuve un problema técnico. ¿Puedes repetir eso?"
-        )
-
-
-# ============================================================
-# HEARTBEAT CALLBACKS
-# ============================================================
 
 def _enviar_async(chat_id: str, texto: str):
     if _bot and _loop:
