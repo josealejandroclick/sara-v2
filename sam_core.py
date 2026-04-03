@@ -1,10 +1,13 @@
 """
-SAM CORE — Etapa 4: Core + Heartbeat Integration
+SAM CORE — Cerebro del agente
+Arquitectura v2 con tools nativas de Anthropic.
 
-Cambios vs Etapa 3:
-- Nueva herramienta: agendar_tarea (Sam puede programar recordatorios)
-- Integración con follow-up tracker (registra actividad de cada sesión)
-- El session_id se pasa a herramientas que lo necesitan
+Tools registradas:
+- verificar_zip     → Google Maps API
+- cotizar_planes    → Healthcare.gov API real + cálculo WN
+- registrar_lead    → GHL CRM via webhook
+- analizar_lead     → Clasificación + notificación al grupo Telegram
+- agendar_tarea     → Heartbeat cron
 """
 
 import json
@@ -22,7 +25,7 @@ from sessions import (
     cargar_sesion, guardar_mensaje,
     necesita_compresion, comprimir_sesion
 )
-from tools import cotizar, registrar_lead, analizar_lead
+from tools import cotizar, registrar_lead, analizar_lead, verificar_zip
 from heartbeat import (
     registrar_actividad,
     TOOL_SCHEMA as AGENDAR_SCHEMA,
@@ -31,10 +34,11 @@ from heartbeat import (
 
 
 # ============================================================
-# HERRAMIENTAS (ahora incluye agendar_tarea)
+# HERRAMIENTAS
 # ============================================================
 
 TOOL_SCHEMAS = [
+    verificar_zip.TOOL_SCHEMA,
     cotizar.TOOL_SCHEMA,
     registrar_lead.TOOL_SCHEMA,
     analizar_lead.TOOL_SCHEMA,
@@ -42,14 +46,15 @@ TOOL_SCHEMAS = [
 ]
 
 TOOL_HANDLERS = {
-    "cotizar_planes": cotizar.ejecutar,
-    "registrar_lead": registrar_lead.ejecutar,
-    "analizar_lead": analizar_lead.ejecutar,
-    "agendar_tarea": ejecutar_agendar,
+    "verificar_zip":    verificar_zip.ejecutar,
+    "cotizar_planes":   cotizar.ejecutar,
+    "registrar_lead":   registrar_lead.ejecutar,
+    "analizar_lead":    analizar_lead.ejecutar,
+    "agendar_tarea":    ejecutar_agendar,
 }
 
-# Herramientas que necesitan recibir session_id como parámetro extra
-TOOLS_CON_SESSION = {"agendar_tarea"}
+# Herramientas que necesitan session_id como parámetro extra
+TOOLS_CON_SESSION = {"agendar_tarea", "analizar_lead"}
 
 
 # ============================================================
@@ -57,45 +62,45 @@ TOOLS_CON_SESSION = {"agendar_tarea"}
 # ============================================================
 
 class SamAgente:
-    
+
     def __init__(self, api_key: str = None, soul_path: str = None, model: str = None):
         self.api_key = api_key or ANTHROPIC_API_KEY
         self.model = model or MODEL_ID
         self.soul_path = soul_path or SOUL_FILE
         self.client = Anthropic(api_key=self.api_key)
         self.soul = self._cargar_soul()
-    
+
     def _cargar_soul(self) -> str:
         try:
             with open(self.soul_path, "r", encoding="utf-8") as f:
                 return f.read()
         except FileNotFoundError:
+            # Fallback: buscar sara_mkaddesh.md
+            fallback = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "souls", "sara_mkaddesh.md"
+            )
             try:
-                with open("souls/default.md", "r", encoding="utf-8") as f:
+                with open(fallback, "r", encoding="utf-8") as f:
                     return f.read()
             except FileNotFoundError:
-                return "Eres Sam, un asistente de seguros de salud amigable y profesional."
-    
+                return "Eres Sara, asesora de protección financiera de Mkaddesh."
+
     def procesar(self, session_id: str, user_input: str) -> str:
         """
-        Procesa UN mensaje y devuelve la respuesta.
-        Ahora también registra actividad para el heartbeat.
+        Procesa un mensaje y devuelve la respuesta.
+        Registra actividad para el heartbeat.
         """
-        # Registrar que el usuario está activo (resetea follow-up timer)
         registrar_actividad(session_id)
-        
-        # Cargar historial
+
         mensajes = cargar_sesion(session_id)
-        
-        # Agregar mensaje
         mensajes.append({"role": "user", "content": user_input})
         guardar_mensaje(session_id, "user", user_input)
-        
-        # Comprimir si necesario
+
         if necesita_compresion(session_id):
             comprimir_sesion(session_id, self.client, self.model, self.soul)
             mensajes = cargar_sesion(session_id)
-        
+
         # Agent loop
         while True:
             response = self.client.messages.create(
@@ -105,12 +110,13 @@ class SamAgente:
                 messages=mensajes,
                 tools=TOOL_SCHEMAS,
             )
-            
+
             mensajes.append({
                 "role": "assistant",
                 "content": response.content
             })
-            
+
+            # Respuesta final de texto
             if response.stop_reason != "tool_use":
                 texto = ""
                 for bloque in response.content:
@@ -118,28 +124,28 @@ class SamAgente:
                         texto += bloque.text
                 guardar_mensaje(session_id, "assistant", texto)
                 return texto
-            
+
             guardar_mensaje(session_id, "assistant", response.content)
-            
+
+            # Ejecutar tools
             resultados = []
             for bloque in response.content:
                 if bloque.type == "tool_use":
                     handler = TOOL_HANDLERS.get(bloque.name)
                     if handler:
-                        # Inyectar session_id a herramientas que lo necesitan
                         if bloque.name in TOOLS_CON_SESSION:
                             output = handler(**bloque.input, session_id=session_id)
                         else:
                             output = handler(**bloque.input)
                     else:
-                        output = json.dumps({"error": f"'{bloque.name}' no encontrada"})
-                    
+                        output = json.dumps({"error": f"Tool '{bloque.name}' no encontrada"})
+
                     resultados.append({
                         "type": "tool_result",
                         "tool_use_id": bloque.id,
                         "content": output,
                     })
-            
+
             mensajes.append({"role": "user", "content": resultados})
             guardar_mensaje(session_id, "user", resultados)
 
@@ -149,6 +155,7 @@ class SamAgente:
 # ============================================================
 
 _agente_default = None
+
 
 def crear_agente(soul_path: str = None) -> SamAgente:
     global _agente_default
