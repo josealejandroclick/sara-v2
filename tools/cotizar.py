@@ -1,34 +1,50 @@
 """
 Tool: cotizar_planes
-Consulta la API de Healthcare.gov Marketplace para obtener
-planes de salud disponibles y sus precios.
+Cotiza planes ACA reales usando la API de Healthcare.gov Marketplace.
+Calcula subsidio APTC, CSR, y las 3 opciones de planes (Básico, Medium, Full Cover)
+incluyendo los add-ons de protección suplementaria.
 
-El modelo llama esta herramienta cuando tiene:
-- ZIP code
-- Cantidad de personas
-- Ingreso anual
-- Edades de los miembros
+Basado en cotizador_fix.py (Sara v1) — adaptado a tool schema de Anthropic.
 """
 
 import json
+import os
+import traceback
 import httpx
-from config import HEALTHCARE_API_URL
 
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
 
-# --- Schema que Claude ve para saber cómo llamar esta herramienta ---
+HEALTHCARE_API_KEY = os.getenv("HEALTHCARE_API_KEY", "XIvzGUQ5RSDAAqGFukLxcmrJ8P2zcCik")
+BASE_URL = "https://marketplace.api.healthcare.gov/api/v1"
+
+COMPANIAS_PREFERIDAS = ["oscar", "ambetter", "florida blue", "unitedhealthcare", "united"]
+NIVELES_OK = ["silver", "gold"]
+
+# Precios fijos de protección suplementaria (Washington National)
+WN_ACCIDENTE = 38.50
+WN_HOSP_BAJA = 45.00   # cuando deducible == 0
+WN_HOSP_ALTA = 65.00   # cuando deducible > 0
+
+# ============================================================
+# SCHEMA
+# ============================================================
+
 TOOL_SCHEMA = {
     "name": "cotizar_planes",
     "description": (
-        "Busca planes de seguro de salud disponibles y sus precios estimados. "
-        "Necesita: código ZIP, ingreso anual del hogar, y lista de edades "
-        "de las personas a cubrir. Devuelve 3 opciones: Básico, Medium y Full Cover."
+        "Cotiza planes de seguro de salud reales usando la API de Healthcare.gov. "
+        "Calcula el subsidio real (APTC) según ingresos y devuelve 3 opciones: "
+        "Básico, Medium y Full Cover con sus precios. "
+        "Usar SOLO cuando se tengan: ZIP verificado, ingreso anual, y edades de todos los miembros."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "zip_code": {
                 "type": "string",
-                "description": "Código ZIP de 5 dígitos donde vive la persona"
+                "description": "Código ZIP de 5 dígitos verificado"
             },
             "ingreso_anual": {
                 "type": "number",
@@ -37,108 +53,281 @@ TOOL_SCHEMA = {
             "edades": {
                 "type": "array",
                 "items": {"type": "integer"},
-                "description": "Lista de edades de las personas a cubrir. Ej: [35, 32, 5]"
+                "description": "Lista de edades de todas las personas a cubrir. Ej: [35, 32, 5]"
+            },
+            "tipo_ingreso": {
+                "type": "string",
+                "enum": ["w2", "1099", "cash"],
+                "description": "Tipo de ingreso: w2 (empleado), 1099 o cash (independiente)"
+            },
+            "filing": {
+                "type": "string",
+                "enum": ["individual", "pareja"],
+                "description": "Si declara taxes solo o con pareja"
             }
         },
         "required": ["zip_code", "ingreso_anual", "edades"]
     }
 }
 
+# ============================================================
+# FPL Y CONTRIBUCIÓN
+# ============================================================
 
-def ejecutar(zip_code: str, ingreso_anual: float, edades: list) -> str:
-    """
-    Llama a la API de Healthcare.gov y devuelve 3 opciones de planes.
-    
-    En producción esto consulta la API real.
-    Por ahora usamos una simulación basada en los parámetros reales
-    para que puedas probar el flujo completo sin depender de la API.
-    """
+FPL_2025 = {
+    1: 15060, 2: 20440, 3: 25820, 4: 31200,
+    5: 36580, 6: 41960, 7: 47340, 8: 52720
+}
+
+CONTRIBUTION_TABLE = [
+    (0,   150,  0.0),
+    (150, 200,  0.0),
+    (200, 250,  2.0),
+    (250, 300,  4.0),
+    (300, 400,  6.0),
+    (400, 9999, 8.5),
+]
+
+
+def _calcular_fpl(ingreso: float, num_personas: int) -> tuple:
+    fpl = FPL_2025.get(num_personas, FPL_2025[8] + (num_personas - 8) * 4480)
+    pct_fpl = (ingreso / fpl) * 100
+    contrib_pct = 8.5
+    for mn, mx, pct in CONTRIBUTION_TABLE:
+        if mn <= pct_fpl < mx:
+            contrib_pct = pct
+            break
+    contrib_mensual = (ingreso * contrib_pct / 100) / 12
+    csr = None
+    if pct_fpl < 150:
+        csr = "CSR94"
+    elif pct_fpl < 200:
+        csr = "CSR87"
+    elif pct_fpl < 250:
+        csr = "CSR73"
+    return contrib_mensual, csr, round(pct_fpl, 1)
+
+
+# ============================================================
+# API HEALTHCARE.GOV
+# ============================================================
+
+def _get_fips(zipcode: str) -> tuple:
     try:
-        # --- Paso 1: Obtener county/FIPS del ZIP ---
-        # En producción: GET /api/v1/counties/by/zip/{zip_code}
-        
-        # --- Paso 2: Obtener planes ---  
-        # En producción: POST /api/v1/plans/search con household, income, etc.
-        
-        # --- Simulación realista basada en parámetros ---
-        num_personas = len(edades)
-        edad_mayor = max(edades)
-        
-        # Precio base estimado (lógica simplificada pero realista)
-        base_mensual = 0
-        for edad in edades:
-            if edad < 15:
-                base_mensual += 95
-            elif edad < 30:
-                base_mensual += 250
-            elif edad < 40:
-                base_mensual += 320
-            elif edad < 50:
-                base_mensual += 400
-            else:
-                base_mensual += 550
-        
-        # Ajuste por subsidio (simplificado)
-        fpl_threshold = 14580 + (num_personas - 1) * 5140  # FPL 2024 aprox
-        ratio_fpl = ingreso_anual / fpl_threshold
-        
-        if ratio_fpl <= 1.5:
-            subsidio_pct = 0.85
-        elif ratio_fpl <= 2.5:
-            subsidio_pct = 0.70
-        elif ratio_fpl <= 4.0:
-            subsidio_pct = 0.50
-        else:
-            subsidio_pct = 0.0
-        
-        precio_basico = round(base_mensual * (1 - subsidio_pct) * 0.6, 2)
-        precio_medium = round(base_mensual * (1 - subsidio_pct) * 0.8, 2)
-        precio_full = round(base_mensual * (1 - subsidio_pct), 2)
-        
-        # Asegurar precios mínimos realistas
-        precio_basico = max(precio_basico, 25.0)
-        precio_medium = max(precio_medium, 50.0)
-        precio_full = max(precio_full, 85.0)
-        
-        resultado = {
-            "exito": True,
-            "zip_code": zip_code,
-            "personas_cubiertas": num_personas,
-            "subsidio_estimado": f"{subsidio_pct * 100:.0f}%",
-            "planes": [
-                {
-                    "nombre": "Plan Básico",
-                    "precio_mensual": precio_basico,
-                    "deducible": 7500 if subsidio_pct < 0.5 else 3000,
-                    "copago_doctor": 40,
-                    "cobertura": "Consultas básicas, emergencias, medicamentos genéricos",
-                    "ideal_para": "Personas jóvenes y saludables que buscan protección esencial"
-                },
-                {
-                    "nombre": "Plan Medium",
-                    "precio_mensual": precio_medium,
-                    "deducible": 4000 if subsidio_pct < 0.5 else 1500,
-                    "copago_doctor": 25,
-                    "cobertura": "Todo lo del básico + especialistas, laboratorios, maternidad",
-                    "ideal_para": "Familias que necesitan cobertura regular"
-                },
-                {
-                    "nombre": "Plan Full Cover",
-                    "precio_mensual": precio_full,
-                    "deducible": 1500 if subsidio_pct < 0.5 else 500,
-                    "copago_doctor": 10,
-                    "cobertura": "Cobertura completa: dental, visión, mental, hospitalización",
-                    "ideal_para": "Quien quiere la mejor protección sin sorpresas"
-                }
-            ],
-            "nota": "Precios estimados. El precio final depende de la verificación con el agente."
-        }
-        
-        return json.dumps(resultado, ensure_ascii=False, indent=2)
-        
+        r = httpx.get(
+            f"{BASE_URL}/counties/by/zip/{zipcode}",
+            params={"apikey": HEALTHCARE_API_KEY},
+            timeout=10
+        )
+        if r.status_code == 200:
+            counties = r.json().get("counties", [])
+            if counties:
+                return counties[0].get("fips", ""), counties[0].get("state", "FL")
     except Exception as e:
+        print(f"[FIPS] Error: {e}")
+    return "", "FL"
+
+
+def _get_benchmark(zipcode: str, fips: str, state: str, personas: list) -> float:
+    try:
+        people = [{"age": max(1, p), "uses_tobacco": False, "aptc_eligible": True} for p in personas]
+        payload = {
+            "aptc_override": 0,
+            "household": {"income": 999999, "people": people},
+            "market": "Individual",
+            "place": {"countyfips": fips, "state": state, "zipcode": zipcode},
+            "year": 2025,
+            "filter": {"metal_levels": ["Silver"]}
+        }
+        r = httpx.post(
+            f"{BASE_URL}/plans/search",
+            params={"apikey": HEALTHCARE_API_KEY},
+            json=payload,
+            timeout=20
+        )
+        if r.status_code == 200:
+            planes = sorted(
+                [p for p in r.json().get("plans", []) if p.get("metal_level", "").lower() == "silver"],
+                key=lambda x: float(x.get("premium", 9999) or 9999)
+            )
+            if len(planes) >= 2:
+                return float(planes[1].get("premium", 0))
+            elif len(planes) == 1:
+                return float(planes[0].get("premium", 0))
+    except Exception as e:
+        print(f"[BENCHMARK] Error: {e}")
+    return 0.0
+
+
+def _buscar_planes(zipcode: str, fips: str, state: str, ingreso: float,
+                   personas: list, contrib: float, csr: str) -> tuple:
+    try:
+        people = [{"age": max(1, p), "uses_tobacco": False, "aptc_eligible": True} for p in personas]
+        benchmark = _get_benchmark(zipcode, fips, state, personas)
+
+        if benchmark > 0:
+            aptc = max(0.0, benchmark - contrib)
+        else:
+            aptc = 0.0
+
+        payload = {
+            "aptc_override": round(aptc, 2),
+            "household": {"income": ingreso, "people": people},
+            "market": "Individual",
+            "place": {"countyfips": fips, "state": state, "zipcode": zipcode},
+            "year": 2025,
+            "filter": {"metal_levels": ["Silver", "Gold"]}
+        }
+        if csr:
+            payload["csr_override"] = csr
+
+        r = httpx.post(
+            f"{BASE_URL}/plans/search",
+            params={"apikey": HEALTHCARE_API_KEY},
+            json=payload,
+            timeout=20
+        )
+        if r.status_code == 200:
+            return r.json().get("plans", []), aptc
+    except Exception as e:
+        print(f"[PLANES] Error: {e}")
+        traceback.print_exc()
+    return [], 0.0
+
+
+def _filtrar_rankear(planes_raw: list, aptc: float) -> tuple:
+    preferidas = []
+    otras = []
+
+    for plan in planes_raw:
+        issuer = plan.get("issuer", {}).get("name", "").lower()
+        nivel = plan.get("metal_level", "").lower()
+        if nivel not in NIVELES_OK:
+            continue
+
+        precio_bruto = float(plan.get("premium", 0) or 0)
+        precio_subsidio = float(plan.get("premium_w_credit") or max(0, precio_bruto - aptc))
+        precio_subsidio = max(0.0, precio_subsidio)
+
+        deds = plan.get("deductibles", [])
+        ded = float(deds[0].get("amount", 0) or 0) if deds else 0.0
+
+        moops = plan.get("moops", [])
+        moop = float(moops[0].get("amount", 0) or 0) if moops else 0.0
+
+        es_preferida = any(c in issuer for c in COMPANIAS_PREFERIDAS)
+
+        entry = {
+            "nombre": plan.get("name", "")[:60],
+            "issuer": plan.get("issuer", {}).get("name", ""),
+            "nivel": plan.get("metal_level", ""),
+            "precio_bruto": round(precio_bruto, 2),
+            "precio_con_subsidio": round(precio_subsidio, 2),
+            "deducible": ded,
+            "moop": moop,
+            "es_preferida": es_preferida,
+            "plan_id": plan.get("id", "")
+        }
+
+        if es_preferida:
+            preferidas.append(entry)
+        else:
+            otras.append(entry)
+
+    preferidas.sort(key=lambda x: x["precio_con_subsidio"])
+    otras.sort(key=lambda x: x["precio_con_subsidio"])
+    return preferidas, otras
+
+
+# ============================================================
+# FUNCIÓN PRINCIPAL
+# ============================================================
+
+def ejecutar(zip_code: str, ingreso_anual: float, edades: list,
+             tipo_ingreso: str = "w2", filing: str = "individual") -> str:
+    try:
+        personas = [int(e) for e in edades if e is not None]
+        if not personas:
+            return json.dumps({"exito": False, "error": "Se necesitan las edades de las personas a cubrir"})
+
+        fips, state = _get_fips(zip_code)
+        if not fips:
+            return json.dumps({"exito": False, "error": f"No se pudo obtener información del ZIP {zip_code}"})
+
+        contrib, csr, pct_fpl = _calcular_fpl(float(ingreso_anual), len(personas))
+        planes_raw, aptc = _buscar_planes(zip_code, fips, state, float(ingreso_anual),
+                                          personas, contrib, csr)
+
+        if not planes_raw:
+            return json.dumps({
+                "exito": False,
+                "sin_planes": True,
+                "mensaje": "No se encontraron planes en esta zona. El asesor puede ayudar directamente."
+            })
+
+        preferidas, otras = _filtrar_rankear(planes_raw, aptc)
+        top3 = preferidas[:3]
+        if len(top3) < 3:
+            top3 += otras[:3 - len(top3)]
+
+        if not top3:
+            return json.dumps({
+                "exito": False,
+                "sin_planes": True,
+                "mensaje": "No se encontraron planes elegibles. El asesor puede ayudar directamente."
+            })
+
+        # Tomar el mejor plan para calcular las 3 opciones con WN
+        mejor = top3[0]
+        precio_aca = mejor["precio_con_subsidio"]
+        deducible = mejor["deducible"]
+
+        hosp = WN_HOSP_BAJA if deducible == 0 else WN_HOSP_ALTA
+
+        opciones = {
+            "basico": round(precio_aca, 2),
+            "medium": round(precio_aca + WN_ACCIDENTE, 2),
+            "full": round(precio_aca + hosp + WN_ACCIDENTE, 2)
+        }
+
+        issuer = mejor.get("issuer", "")
+        if isinstance(issuer, dict):
+            issuer = issuer.get("name", "")
+
+        return json.dumps({
+            "exito": True,
+            "zip": zip_code,
+            "estado": state,
+            "fpl_porcentaje": pct_fpl,
+            "aptc_mensual": round(aptc, 2),
+            "csr": csr,
+            "tipo_ingreso": tipo_ingreso,
+            "mejor_plan": {
+                "nombre": mejor["nombre"],
+                "issuer": issuer,
+                "nivel": mejor["nivel"],
+                "precio_bruto": mejor["precio_bruto"],
+                "precio_con_subsidio": precio_aca,
+                "deducible": int(deducible),
+                "moop": int(mejor["moop"])
+            },
+            "opciones_para_asesor": {
+                "basico_mensual": opciones["basico"],
+                "medium_mensual": opciones["medium"],
+                "full_mensual": opciones["full"]
+            },
+            "total_planes_encontrados": len(planes_raw),
+            "planes_preferidas": len(preferidas),
+            "nota_interna": (
+                "Cotización procesada. Sara NO debe mencionar precios. "
+                "Continuar con siembra del dolor y presentar los 3 planes con beneficios."
+            )
+        }, ensure_ascii=False)
+
+    except Exception as e:
+        traceback.print_exc()
         return json.dumps({
             "exito": False,
             "error": f"Error al cotizar: {str(e)}",
-            "mensaje": "No pudimos obtener precios en este momento. El agente puede ayudarle directamente."
+            "mensaje": "No pudimos obtener precios ahora. El asesor puede ayudar directamente."
         }, ensure_ascii=False)

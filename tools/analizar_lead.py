@@ -1,23 +1,23 @@
 """
 Tool: analizar_lead
-Analiza la conversación y clasifica la temperatura del lead.
-Envía notificación al grupo de Telegram del equipo.
-
-Igual que Sara hace hoy, pero como herramienta modular.
+Clasifica la temperatura del lead y envía notificación al grupo de Telegram.
+Incluye precios de cotización si están disponibles (como Sara v1).
 """
 
 import json
+import os
 import httpx
-from config import NOTIFY_CHAT_ID, NOTIFY_BOT_TOKEN
 
+NOTIFY_BOT_TOKEN = os.getenv("NOTIFY_BOT_TOKEN", "")
+NOTIFY_CHAT_ID = os.getenv("NOTIFY_CHAT_ID", "")
 
 TOOL_SCHEMA = {
     "name": "analizar_lead",
     "description": (
-        "Analiza la conversación actual y clasifica al prospecto como "
-        "CALIENTE (listo para comprar), TIBIO (interesado pero con dudas), "
-        "o FRÍO (solo explorando). Envía notificación al equipo de ventas. "
-        "Usar cuando la conversación tenga suficiente contexto para evaluar intención."
+        "Clasifica al prospecto como CALIENTE, TIBIO o FRÍO y notifica al equipo "
+        "de ventas via Telegram. Incluye resumen de la conversación, plan de interés, "
+        "y precios de cotización si ya se cotizó. "
+        "Usar cuando el cliente haya mostrado interés claro o haya dado su nombre."
     ),
     "input_schema": {
         "type": "object",
@@ -25,23 +25,44 @@ TOOL_SCHEMA = {
             "temperatura": {
                 "type": "string",
                 "enum": ["CALIENTE", "TIBIO", "FRIO"],
-                "description": "Clasificación del lead basada en la conversación"
+                "description": (
+                    "CALIENTE: quiere inscribirse, pide precio, da todos sus datos. "
+                    "TIBIO: interesado pero con dudas o preguntas. "
+                    "FRIO: solo explorando, no muestra urgencia."
+                )
             },
             "nombre_lead": {
                 "type": "string",
-                "description": "Nombre del prospecto"
+                "description": "Nombre del prospecto si lo dio"
             },
             "razon": {
                 "type": "string",
-                "description": "Breve explicación de por qué se clasifica así"
+                "description": "Por qué se clasifica con esa temperatura"
             },
             "accion_sugerida": {
                 "type": "string",
-                "description": "Qué debería hacer el agente: llamar ya, enviar info, esperar, etc."
+                "description": "Qué debe hacer el asesor: llamar ahora, hacer seguimiento, esperar"
             },
             "plan_interes": {
                 "type": "string",
+                "enum": ["basico", "medium", "full", ""],
                 "description": "Plan que mostró interés, si aplica"
+            },
+            "resumen_conversacion": {
+                "type": "string",
+                "description": "Resumen breve de los puntos clave de la conversación"
+            },
+            "datos_cotizacion": {
+                "type": "object",
+                "description": (
+                    "Datos de la cotización si ya se procesó: "
+                    "zip, fpl_porcentaje, aptc_mensual, opciones_para_asesor "
+                    "(basico_mensual, medium_mensual, full_mensual), mejor_plan"
+                )
+            },
+            "chat_id": {
+                "type": "string",
+                "description": "ID del chat de Telegram del cliente"
             }
         },
         "required": ["temperatura", "nombre_lead", "razon", "accion_sugerida"]
@@ -54,48 +75,87 @@ def ejecutar(
     nombre_lead: str,
     razon: str,
     accion_sugerida: str,
-    plan_interes: str = ""
+    plan_interes: str = "",
+    resumen_conversacion: str = "",
+    datos_cotizacion: dict = None,
+    chat_id: str = ""
 ) -> str:
-    """
-    Clasifica el lead y notifica al equipo via Telegram.
-    """
-    # Emojis por temperatura
-    emoji_map = {
-        "CALIENTE": "🔥",
-        "TIBIO": "🌤️",
-        "FRIO": "❄️"
-    }
+    emoji_map = {"CALIENTE": "🔥", "TIBIO": "🌡", "FRIO": "❄️"}
     emoji = emoji_map.get(temperatura, "❓")
-    
-    # Construir mensaje de notificación
-    notificacion = (
-        f"{emoji} LEAD {temperatura} {emoji}\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"👤 {nombre_lead}\n"
-        f"📊 Análisis: {razon}\n"
-    )
+
+    planes_nombres = {
+        "full": "💎 Full Cover — salud + hospitalización + accidente",
+        "medium": "🛡️ Medium — salud + accidente",
+        "basico": "🏥 Básico — solo salud"
+    }
+
+    # Construir mensaje
+    lineas = [
+        f"{emoji} *LEAD {temperatura}*",
+        "",
+        f"*Acción:* {accion_sugerida}",
+        f"*Cliente:* {nombre_lead or 'No identificado'}",
+        f"*Por qué:* {razon}",
+    ]
+
     if plan_interes:
-        notificacion += f"📋 Interés: {plan_interes}\n"
-    notificacion += (
-        f"⚡ Acción: {accion_sugerida}\n"
-        f"━━━━━━━━━━━━━━━━━━"
-    )
-    
-    # --- Envío real a Telegram ---
+        lineas.append(f"*Plan elegido:* {planes_nombres.get(plan_interes, plan_interes)}")
+
+    if resumen_conversacion:
+        lineas += ["", f"*Resumen:* {resumen_conversacion}"]
+
+    # Sección de cotización si existe
+    if datos_cotizacion and isinstance(datos_cotizacion, dict):
+        opciones = datos_cotizacion.get("opciones_para_asesor", {})
+        mejor = datos_cotizacion.get("mejor_plan", {})
+        fpl = datos_cotizacion.get("fpl_porcentaje", 0)
+        aptc = datos_cotizacion.get("aptc_mensual", 0)
+        csr = datos_cotizacion.get("csr", "")
+
+        if opciones:
+            lineas += [
+                "",
+                "*COTIZACIÓN:*",
+            ]
+            if mejor:
+                issuer = mejor.get("issuer", "N/A")
+                lineas += [
+                    f"Plan: {mejor.get('nombre', 'N/A')[:45]}",
+                    f"Compañía: {issuer}",
+                    f"Con subsidio: *${int(mejor.get('precio_con_subsidio', 0))}/mes*",
+                    f"Deducible: ${int(mejor.get('deducible', 0)):,} | Máx bolsillo: ${int(mejor.get('moop', 0)):,}",
+                    f"FPL: {fpl}% | APTC: ${int(aptc)}/mes" + (f" | {csr}" if csr else ""),
+                ]
+            lineas += [
+                "",
+                "*OPCIONES PARA EL ASESOR:*",
+                f"Básico (solo salud): *${opciones.get('basico_mensual', 0)}/mes*",
+                f"Medium (salud + accidente): *${opciones.get('medium_mensual', 0)}/mes*",
+                f"Full Cover (salud + hosp + accidente): *${opciones.get('full_mensual', 0)}/mes*",
+            ]
+
+    if chat_id:
+        lineas += ["", f"Chat Telegram: `{chat_id}`"]
+
+    mensaje = "\n".join(lineas)
+
+    # Enviar a Telegram
+    enviado = False
     if NOTIFY_BOT_TOKEN and NOTIFY_CHAT_ID:
         try:
             url = f"https://api.telegram.org/bot{NOTIFY_BOT_TOKEN}/sendMessage"
-            httpx.post(url, json={
+            r = httpx.post(url, json={
                 "chat_id": NOTIFY_CHAT_ID,
-                "text": notificacion,
-                "parse_mode": "HTML"
-            }, timeout=5.0)
-        except Exception:
-            pass  # No bloquear el flujo si falla la notificación
-    
+                "text": mensaje,
+                "parse_mode": "Markdown"
+            }, timeout=8)
+            enviado = r.status_code == 200
+        except Exception as e:
+            print(f"[NOTIF] Error: {e}")
+
     return json.dumps({
         "exito": True,
         "temperatura": temperatura,
-        "notificacion_enviada": bool(NOTIFY_BOT_TOKEN and NOTIFY_CHAT_ID),
-        "mensaje": f"Lead clasificado como {temperatura}. Equipo notificado."
+        "notificacion_enviada": enviado,
+        "mensaje": f"Lead {nombre_lead} clasificado como {temperatura}."
     }, ensure_ascii=False)
