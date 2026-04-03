@@ -62,12 +62,12 @@ def dividir_en_mensajes(texto: str) -> list:
     2. Si la respuesta es larga → divide por párrafos (doble salto de línea)
     3. Nunca envía un bloque de más de 600 caracteres como un solo mensaje
     """
-    marcadores = ['Plan Básico', 'Plan Medium', 'Plan Full Cover']
+    marcadores = ['Plan Básico', 'Medium Cover', 'Full Cover']
     tiene_planes = sum(1 for m in marcadores if m in texto)
 
     # Dividir por planes
     if tiene_planes >= 2:
-        partes = re.split(r'(?=Plan Básico|Plan Medium|Plan Full Cover)', texto)
+        partes = re.split(r'(?=Plan Básico|Medium Cover|Full Cover)', texto)
         mensajes = [p.strip() for p in partes if p.strip()]
         return mensajes
 
