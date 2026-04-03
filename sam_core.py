@@ -1,13 +1,12 @@
 """
 SAM CORE — Cerebro del agente
-Arquitectura v2 con tools nativas de Anthropic.
-
-Tools registradas:
-- verificar_zip     → Google Maps API
-- cotizar_planes    → Healthcare.gov API real + cálculo WN
-- registrar_lead    → GHL CRM via webhook
-- analizar_lead     → Clasificación + notificación al grupo Telegram
-- agendar_tarea     → Heartbeat cron
+6 tools registrados:
+- verificar_zip
+- cotizar_planes
+- registrar_lead
+- analizar_lead
+- consultar_conocimiento
+- agendar_tarea
 """
 
 import json
@@ -25,7 +24,7 @@ from sessions import (
     cargar_sesion, guardar_mensaje,
     necesita_compresion, comprimir_sesion
 )
-from tools import cotizar, registrar_lead, analizar_lead, verificar_zip
+from tools import cotizar, registrar_lead, analizar_lead, verificar_zip, consultar_conocimiento
 from heartbeat import (
     registrar_actividad,
     TOOL_SCHEMA as AGENDAR_SCHEMA,
@@ -42,18 +41,20 @@ TOOL_SCHEMAS = [
     cotizar.TOOL_SCHEMA,
     registrar_lead.TOOL_SCHEMA,
     analizar_lead.TOOL_SCHEMA,
+    consultar_conocimiento.TOOL_SCHEMA,
     AGENDAR_SCHEMA,
 ]
 
 TOOL_HANDLERS = {
-    "verificar_zip":    verificar_zip.ejecutar,
-    "cotizar_planes":   cotizar.ejecutar,
-    "registrar_lead":   registrar_lead.ejecutar,
-    "analizar_lead":    analizar_lead.ejecutar,
-    "agendar_tarea":    ejecutar_agendar,
+    "verificar_zip":          verificar_zip.ejecutar,
+    "cotizar_planes":         cotizar.ejecutar,
+    "registrar_lead":         registrar_lead.ejecutar,
+    "analizar_lead":          analizar_lead.ejecutar,
+    "consultar_conocimiento": consultar_conocimiento.ejecutar,
+    "agendar_tarea":          ejecutar_agendar,
 }
 
-# Herramientas que necesitan session_id como parámetro extra
+# Tools que necesitan session_id como parámetro extra
 TOOLS_CON_SESSION = {"agendar_tarea", "analizar_lead"}
 
 
@@ -75,7 +76,6 @@ class SamAgente:
             with open(self.soul_path, "r", encoding="utf-8") as f:
                 return f.read()
         except FileNotFoundError:
-            # Fallback: buscar sara_mkaddesh.md
             fallback = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)),
                 "souls", "sara_mkaddesh.md"
@@ -84,13 +84,10 @@ class SamAgente:
                 with open(fallback, "r", encoding="utf-8") as f:
                     return f.read()
             except FileNotFoundError:
-                return "Eres Sara, asesora de protección financiera de Mkaddesh."
+                return "Eres Sara, asesora de protección financiera de MKAddesh."
 
     def procesar(self, session_id: str, user_input: str) -> str:
-        """
-        Procesa un mensaje y devuelve la respuesta.
-        Registra actividad para el heartbeat.
-        """
+        """Procesa un mensaje y devuelve la respuesta."""
         registrar_actividad(session_id)
 
         mensajes = cargar_sesion(session_id)
