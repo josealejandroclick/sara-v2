@@ -12,6 +12,11 @@ import httpx
 NOTIFY_BOT_TOKEN = os.getenv("NOTIFY_BOT_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")
 NOTIFY_CHAT_ID = os.getenv("NOTIFY_CHAT_ID", "")
 
+# Email de notificaciones
+EMAIL_FROM = os.getenv("EMAIL_FROM", "mkaddeshholding@gmail.com")
+EMAIL_TO = os.getenv("EMAIL_TO", "holdingventascrm@gmail.com")
+EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "")  # App Password de Gmail
+
 TOOL_SCHEMA = {
     "name": "analizar_lead",
     "description": (
@@ -69,6 +74,29 @@ TOOL_SCHEMA = {
         "required": ["temperatura", "nombre_lead", "razon", "accion_sugerida"]
     }
 }
+
+
+def _enviar_email(asunto: str, cuerpo: str):
+    """Envía notificación por email via Gmail SMTP."""
+    if not EMAIL_PASSWORD:
+        return
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+
+        msg = MIMEMultipart()
+        msg["From"] = EMAIL_FROM
+        msg["To"] = EMAIL_TO
+        msg["Subject"] = asunto
+
+        msg.attach(MIMEText(cuerpo, "plain", "utf-8"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL_FROM, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
+    except Exception as e:
+        print(f"[EMAIL] Error: {e}")
 
 
 def ejecutar(
@@ -164,7 +192,12 @@ def ejecutar(
             }, timeout=8)
             enviado = r.status_code == 200
         except Exception as e:
-            print(f"[NOTIF] Error: {e}")
+            print(f"[NOTIF] Error Telegram: {e}")
+
+    # Enviar por email
+    emoji_texto = {"CALIENTE": "🔥 LEAD CALIENTE", "TIBIO": "🌡 LEAD TIBIO", "FRIO": "❄️ LEAD FRÍO"}
+    asunto = f"{emoji_texto.get(temperatura, temperatura)} — {nombre_lead or 'Sin nombre'} | MKAddesh"
+    _enviar_email(asunto, mensaje)
 
     return json.dumps({
         "exito": True,
