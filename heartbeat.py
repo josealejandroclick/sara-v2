@@ -72,12 +72,16 @@ def obtener_leads_para_followup() -> list:
     """
     Devuelve lista de (session_id, followup_num) donde followup_num
     indica cuál follow-up toca enviar según los intervalos configurados.
+    Solo incluye session_ids numéricos válidos de Telegram.
     """
     tracker = _cargar_tracker()
     ahora = time.time()
     leads = []
 
     for session_id, data in tracker.items():
+        # Ignorar sesiones no numéricas (consola_test, etc.)
+        if not str(session_id).lstrip("-").isdigit():
+            continue
         if not data.get("activo", True):
             continue
 

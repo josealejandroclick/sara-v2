@@ -16,6 +16,34 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from anthropic import Anthropic
+from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo
+    _TZ_ET = ZoneInfo("America/New_York")
+except ImportError:
+    _TZ_ET = None
+
+
+def _contexto_tiempo() -> str:
+    """Devuelve fecha, hora y si es horario de oficina en zona ET."""
+    try:
+        ahora = datetime.now(_TZ_ET) if _TZ_ET else datetime.now()
+        dia_semana = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"][ahora.weekday()]
+        hora_str = ahora.strftime("%I:%M %p")
+        fecha_str = ahora.strftime("%d/%m/%Y")
+        es_oficina = ahora.weekday() < 5 and 8 <= ahora.hour < 18
+        horario = "HORARIO DE OFICINA — un asesor puede llamar dentro de la próxima media hora" if es_oficina else "FUERA DE HORARIO — el asesor contacta al siguiente día hábil"
+        return (
+            f"[CONTEXTO DEL SISTEMA]\n"
+            f"Fecha actual: {dia_semana} {fecha_str}\n"
+            f"Hora actual (ET): {hora_str}\n"
+            f"Estado: {horario}\n"
+            f"Si el cliente pide que lo llamen 'mañana', la fecha correcta es {(ahora).strftime('%d/%m/%Y')} sumando 1 día.\n"
+            f"[FIN CONTEXTO]"
+        )
+    except Exception:
+        return ""
+
 from config import (
     ANTHROPIC_API_KEY, MODEL_ID, SOUL_FILE,
     MAX_TOKENS_RESPONSE
@@ -103,7 +131,7 @@ class SamAgente:
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=MAX_TOKENS_RESPONSE,
-                system=self.soul,
+                system=self.soul + "\n\n" + _contexto_tiempo(),
                 messages=mensajes,
                 tools=TOOL_SCHEMAS,
             )
